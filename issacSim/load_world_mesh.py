@@ -33,7 +33,7 @@ import omni.kit.app
 from omni.isaac.core import World
 from omni.isaac.core.utils.stage import add_reference_to_stage, get_stage_units
 from omni.isaac.core.prims import XFormPrim
-from pxr import Usd, UsdGeom, Gf, UsdPhysics, UsdLux, Sdf
+from pxr import Usd, UsdGeom, Gf, UsdPhysics, UsdLux, Sdf, UsdShade
 from omni.isaac.core.utils.extensions import enable_extension
 import numpy as np
 
@@ -560,6 +560,139 @@ def add_ground_plane(stage, ground_z):
     return True
 
 
+def add_wall_for_object(stage, object_name, direction="y+", wall_height=3.0, wall_thickness=0.1, wall_extend=1.0, color=(1.0, 0.8, 0.0)):
+    """
+    为指定物体添加墙壁（带碰撞，基于包围盒）
+    
+    Args:
+        stage: USD Stage
+        object_name: 物体名称（例如 "instance_19_refine_world"）
+        direction: 墙壁方向 ("y+", "y-", "x+", "x-")
+        wall_height: 墙壁高度（米）
+        wall_thickness: 墙壁厚度（米）
+        wall_extend: 墙壁在两侧延伸的距离（米）
+        color: 墙壁颜色 RGB（默认黄色）
+    """
+    from pxr import UsdGeom, Gf, UsdShade
+    from omni.isaac.core.utils.prims import create_prim
+    
+    print(f"\n[墙壁] 为 {object_name} 添加墙壁...")
+    
+    # 获取物体的 prim
+    object_path = f"/World/{object_name}"
+    object_prim = stage.GetPrimAtPath(object_path)
+    
+    if not object_prim or not object_prim.IsValid():
+        print(f"  ✗ 找不到物体: {object_name}")
+        return False
+    
+    # 获取物体的包围盒
+    bbox = get_bounding_box(stage, object_path)
+    if not bbox:
+        print(f"  ✗ 无法获取物体包围盒")
+        return False
+    
+    # 计算墙壁位置和尺寸
+    obj_min = bbox['min']
+    obj_max = bbox['max']
+    obj_center = bbox['center']
+    obj_size = bbox['size']
+    
+    # 根据方向计算墙壁参数（基于包围盒）
+    if direction == "y+":
+        # Y 轴正方向（物体的 +Y 侧）
+        wall_width = obj_size[0] + wall_extend * 2  # X 方向宽度
+        wall_height_actual = wall_height
+        wall_depth = wall_thickness
+        
+        wall_pos = [
+            obj_center[0],  # X: 与物体中心对齐
+            obj_max[1] + wall_thickness / 2,  # Y: 紧贴物体 +Y 侧
+            obj_min[2] + wall_height / 2  # Z: 从物体底部开始
+        ]
+        wall_scale = [wall_width, wall_depth, wall_height_actual]
+        
+    elif direction == "y-":
+        wall_width = obj_size[0] + wall_extend * 2
+        wall_height_actual = wall_height
+        wall_depth = wall_thickness
+        
+        wall_pos = [
+            obj_center[0],
+            obj_min[1] - wall_thickness / 2,
+            obj_min[2] + wall_height / 2
+        ]
+        wall_scale = [wall_width, wall_depth, wall_height_actual]
+        
+    elif direction == "x+":
+        wall_width = obj_size[1] + wall_extend * 2  # Y 方向宽度
+        wall_height_actual = wall_height
+        wall_depth = wall_thickness
+        
+        wall_pos = [
+            obj_max[0] + wall_thickness / 2,
+            obj_center[1],
+            obj_min[2] + wall_height / 2
+        ]
+        wall_scale = [wall_depth, wall_width, wall_height_actual]
+        
+    elif direction == "x-":
+        wall_width = obj_size[1] + wall_extend * 2
+        wall_height_actual = wall_height
+        wall_depth = wall_thickness
+        
+        wall_pos = [
+            obj_min[0] - wall_thickness / 2,
+            obj_center[1],
+            obj_min[2] + wall_height / 2
+        ]
+        wall_scale = [wall_depth, wall_width, wall_height_actual]
+    else:
+        print(f"  ✗ 未知方向: {direction}")
+        return False
+    
+    # 创建墙壁（使用 Cube）
+    # 转换方向名称为合法的 USD 路径（不能包含 + 或 -）
+    direction_name = direction.replace("+", "pos").replace("-", "neg")
+    wall_path = f"/World/Walls/Wall_{object_name}_{direction_name}"
+    wall_prim = create_prim(
+        prim_path=wall_path,
+        prim_type="Cube",
+        position=np.array(wall_pos),
+        scale=np.array(wall_scale),
+        attributes={
+            "primvars:displayColor": [color],
+        }
+    )
+    
+    # 添加碰撞
+    UsdPhysics.CollisionAPI.Apply(wall_prim)
+    
+    # 创建材质
+    material_path = f"/World/Looks/WallMaterial_{object_name}"
+    material = UsdShade.Material.Define(stage, material_path)
+    
+    shader_path = material_path + "/Shader"
+    shader = UsdShade.Shader.Define(stage, shader_path)
+    shader.CreateIdAttr("UsdPreviewSurface")
+    
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.6)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    
+    # 绑定材质
+    binding_api = UsdShade.MaterialBindingAPI.Apply(wall_prim)
+    binding_api.Bind(material)
+    
+    print(f"  ✓ 墙壁已创建")
+    print(f"     位置: [{wall_pos[0]:.2f}, {wall_pos[1]:.2f}, {wall_pos[2]:.2f}]")
+    print(f"     尺寸: {wall_scale[0]:.2f} x {wall_scale[1]:.2f} x {wall_scale[2]:.2f} m")
+    print(f"     颜色: 黄色")
+    return True
+
+
 def add_grid_lines(stage, ground_z, grid_size=1.0, grid_range=50):
     """
     在地面上添加网格线（帮助看清物体位置）
@@ -783,6 +916,64 @@ def main():
         
         # 添加网格线（帮助看清物体位置）
         add_grid_lines(stage, ground_z, grid_size=1.0, grid_range=50)
+        # 为 instance_19 添加定制墙壁
+        print("\n[墙壁] 为 instance_19 添加定制墙壁...")
+        from omni.isaac.core.utils.prims import create_prim
+        import math
+        
+        # 墙壁参数（基于手动调整的 Transform）
+        wall_position = [-1.49, 1.47718, ground_z + 1.5]  # Z 从地面开始，墙高一半
+        wall_scale = [4.0, 0.0005, 1.5]  # 宽度 x 厚度 x 高度
+        wall_rotation_z_deg = -16.75  # 绕 Z 轴旋转角度（度）
+        wall_color = (0.5, 0.5, 0.99)  # 黄色
+        
+        # 将旋转角度转换为四元数
+        wall_rotation_z_rad = math.radians(wall_rotation_z_deg)
+        # 绕 Z 轴旋转的四元数: (w, x, y, z)
+        qw = math.cos(wall_rotation_z_rad / 2)
+        qx = 0.0
+        qy = 0.0
+        qz = math.sin(wall_rotation_z_rad / 2)
+        
+        # 创建墙壁（使用四元数设置旋转）
+        wall_path = "/World/Walls/Wall_instance19_custom"
+        wall_prim = create_prim(
+            prim_path=wall_path,
+            prim_type="Cube",
+            position=np.array(wall_position),
+            orientation=np.array([qw, qx, qy, qz]),  # 四元数旋转
+            scale=np.array(wall_scale),
+            attributes={
+                "primvars:displayColor": [wall_color],
+            }
+        )
+        
+        # 添加碰撞（仅 CollisionAPI，无 RigidBodyAPI，因此是静态墙壁，不会移动）
+        UsdPhysics.CollisionAPI.Apply(wall_prim)
+        
+        # 创建材质
+        material_path = "/World/Looks/WallMaterial_instance19"
+        material = UsdShade.Material.Define(stage, material_path)
+        
+        shader_path = material_path + "/Shader"
+        shader = UsdShade.Shader.Define(stage, shader_path)
+        shader.CreateIdAttr("UsdPreviewSurface")
+        
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*wall_color))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.6)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        
+        # 绑定材质
+        binding_api = UsdShade.MaterialBindingAPI.Apply(wall_prim)
+        binding_api.Bind(material)
+        
+        print(f"  ✓ 定制墙壁已创建")
+        print(f"     位置: [{wall_position[0]:.2f}, {wall_position[1]:.2f}, {wall_position[2]:.2f}]")
+        print(f"     尺寸: {wall_scale[0]:.2f} x {wall_scale[1]:.2f} x {wall_scale[2]:.2f} m")
+        print(f"     旋转: {wall_rotation_z_deg:.1f}°")
+        print(f"     颜色: 黄色")
         
         # 添加光照
         add_lighting(stage)
@@ -810,11 +1001,27 @@ def main():
         # 交互式启动控制
         if enable_physics:
             print("🎮 物理仿真控制:")
+            print("  场景已加载，您可以自由拖动观察")
             print("  [Enter]  - 启动重力仿真")
             print("  [Ctrl+C] - 退出程序")
             print()
+            
+            # 非阻塞等待，保持渲染更新
+            import select
+            import sys
+            
+            print("按 Enter 键启动重力仿真（期间可自由观察场景）...")
             try:
-                input("按 Enter 键启动重力仿真...")
+                waiting = True
+                while waiting:
+                    # 更新渲染，保持界面可交互
+                    omni.kit.app.get_app().update()
+                    time.sleep(0.016)  # ~60 FPS
+                    
+                    # 检查是否有输入（非阻塞）
+                    if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+                        line = sys.stdin.readline()
+                        waiting = False
             except KeyboardInterrupt:
                 print("\n\n用户取消，退出程序")
                 return
