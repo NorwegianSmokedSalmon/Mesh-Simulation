@@ -419,49 +419,213 @@ def load_world_mesh(input_dir, usd_cache_dir, stage, world, enable_physics=True,
     return True, ground_z
 
 
+def create_checkerboard_ground(stage, ground_z, grid_size=1.0, grid_count=100):
+    """
+    创建带网格的地面（使用 Isaac Sim 内置功能）
+    
+    Args:
+        stage: USD Stage
+        ground_z: 地面高度 (m)
+        grid_size: 格子大小 (m)
+        grid_count: 格子数量（每边）
+    """
+    from pxr import UsdGeom, Gf, UsdShade
+    import omni.isaac.core.utils.prims as prims_utils
+    
+    print(f"\n[地面] 创建网格地面于 z = {ground_z:.4f}m")
+    
+    try:
+        # 尝试使用 Isaac Sim 的默认网格地面
+        from omni.isaac.core.utils.stage import add_reference_to_stage
+        
+        # 创建地面 Xform
+        ground_path = "/World/GroundPlane"
+        ground_xform = UsdGeom.Xform.Define(stage, ground_path)
+        ground_xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, ground_z))
+        
+        # 使用 Isaac Sim 的网格地面资产
+        # 注意：需要确认 Isaac Sim 版本和资产路径
+        grid_plane_path = "omniverse://localhost/NVIDIA/Assets/Isaac/2023.1.1/Isaac/Environments/Grid/gridroom_curved.usd"
+        
+        # 尝试添加引用
+        try:
+            add_reference_to_stage(usd_path=grid_plane_path, prim_path=ground_path + "/GridPlane")
+            print(f"  ✓ 使用 Isaac Sim 内置网格地面")
+            return True
+        except:
+            pass
+            
+    except Exception as e:
+        print(f"  ⚠️  无法使用内置网格地面: {e}")
+    
+    # 回退方案：创建简单的带颜色的平面
+    print(f"  使用自定义浅灰色地面")
+    
+    ground_prim_path = "/World/GroundPlane"
+    ground_geom = UsdGeom.Mesh.Define(stage, ground_prim_path)
+    
+    # 创建大平面
+    half_size = (grid_count * grid_size) / 2.0
+    vertices = [
+        Gf.Vec3f(-half_size, -half_size, ground_z),
+        Gf.Vec3f(half_size, -half_size, ground_z),
+        Gf.Vec3f(half_size, half_size, ground_z),
+        Gf.Vec3f(-half_size, half_size, ground_z),
+    ]
+    
+    ground_geom.GetPointsAttr().Set(vertices)
+    ground_geom.GetFaceVertexCountsAttr().Set([4])
+    ground_geom.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+    
+    normals = [Gf.Vec3f(0, 0, 1)] * 4
+    ground_geom.GetNormalsAttr().Set(normals)
+    ground_geom.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+    
+    # 创建浅灰色材质（不会在仿真后消失）
+    material_path = "/World/Looks/GroundMaterial"
+    material = UsdShade.Material.Define(stage, material_path)
+    
+    shader_path = material_path + "/Shader"
+    shader = UsdShade.Shader.Define(stage, shader_path)
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.8, 0.8, 0.8))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5)
+    
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    
+    binding_api = UsdShade.MaterialBindingAPI.Apply(ground_geom.GetPrim())
+    binding_api.Bind(material)
+    
+    # 添加碰撞
+    UsdPhysics.CollisionAPI.Apply(ground_geom.GetPrim())
+    
+    print(f"  ✓ 地面已创建（浅灰色材质）")
+    return True
+
+
 def add_ground_plane(stage, ground_z):
     """
-    在指定高度添加地面平面
+    在指定高度添加地面平面（使用 Isaac Sim 推荐的方式）
     
     Args:
         stage: USD Stage
         ground_z: 地面高度 (m)
     """
-    from pxr import UsdGeom, Gf
+    from pxr import UsdGeom, Gf, UsdShade
+    from omni.isaac.core.utils.prims import create_prim
     
     print(f"\n[地面] 创建地面平面于 z = {ground_z:.4f}m")
     
-    # 创建一个大的静态平面作为地面
+    # 使用 Isaac Sim 的 create_prim 创建地面
     ground_prim_path = "/World/GroundPlane"
-    ground_geom = UsdGeom.Mesh.Define(stage, ground_prim_path)
     
-    # 设置为一个大平面（100m x 100m）
+    # 创建一个 Cube 作为地面（拉伸成薄片）
     size = 100.0
-    points = [
-        Gf.Vec3f(-size, -size, ground_z),
-        Gf.Vec3f(size, -size, ground_z),
-        Gf.Vec3f(size, size, ground_z),
-        Gf.Vec3f(-size, size, ground_z),
-    ]
-    ground_geom.GetPointsAttr().Set(points)
+    ground_prim = create_prim(
+        prim_path=ground_prim_path,
+        prim_type="Cube",
+        position=np.array([0, 0, ground_z - 0.05]),  # 稍微下移，厚度 0.1m
+        scale=np.array([size, size, 0.1]),  # 100m x 100m x 0.1m
+        attributes={
+            "primvars:displayColor": [(0.7, 0.75, 0.8)],  # 偏蓝灰色
+            "primvars:displayOpacity": [1.0],
+        }
+    )
     
-    # 设置面的拓扑
-    ground_geom.GetFaceVertexCountsAttr().Set([4])
-    ground_geom.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
-    
-    # 设置法线（Z-up，向上）
-    normals = [Gf.Vec3f(0, 0, 1)] * 4
-    ground_geom.GetNormalsAttr().Set(normals)
-    ground_geom.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-    
-    # 添加碰撞属性（静态，不受重力影响）
-    ground_prim = stage.GetPrimAtPath(ground_prim_path)
+    # 添加碰撞
     UsdPhysics.CollisionAPI.Apply(ground_prim)
     
-    # 地面是静态的，不需要 RigidBody（或者设置为 kinematic）
-    # 不添加 RigidBodyAPI 意味着它是完全静态的
+    # 创建并绑定持久化材质
+    material_path = "/World/Looks/GroundMaterial"
+    material = UsdShade.Material.Define(stage, material_path)
     
-    print(f"  ✓ 地面平面已创建")
+    shader_path = material_path + "/Shader"
+    shader = UsdShade.Shader.Define(stage, shader_path)
+    shader.CreateIdAttr("UsdPreviewSurface")
+    
+    # 深灰色，确保可见
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.5, 0.5, 0.55))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    
+    # 强制绑定材质
+    binding_api = UsdShade.MaterialBindingAPI.Apply(ground_prim)
+    binding_api.Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    
+    print(f"  ✓ 地面已创建（深灰色，强制材质绑定）")
+    print(f"     高度: z = {ground_z:.4f}m")
+    print(f"     大小: {size*2}m x {size*2}m x 0.1m")
+    return True
+
+
+def add_grid_lines(stage, ground_z, grid_size=1.0, grid_range=50):
+    """
+    在地面上添加网格线（帮助看清物体位置）
+    
+    Args:
+        stage: USD Stage
+        ground_z: 地面高度
+        grid_size: 网格大小（米）
+        grid_range: 网格范围（米）
+    """
+    from pxr import UsdGeom, Gf
+    
+    print(f"\n[网格] 添加地面网格线...")
+    
+    # 创建网格线组
+    grid_xform_path = "/World/GridLines"
+    grid_xform = UsdGeom.Xform.Define(stage, grid_xform_path)
+    
+    line_count = 0
+    # 创建 X 方向的线
+    for i in range(-grid_range, grid_range + 1):
+        if i == 0:
+            continue  # 跳过中心线，避免重复
+        y = i * grid_size
+        
+        # 创建线段（负数用 n 表示，避免路径错误）
+        line_name = f"LineX_n{abs(i)}" if i < 0 else f"LineX_{i}"
+        line_path = f"{grid_xform_path}/{line_name}"
+        line_geom = UsdGeom.BasisCurves.Define(stage, line_path)
+        
+        # 设置点
+        points = [
+            Gf.Vec3f(-grid_range * grid_size, y, ground_z + 0.001),
+            Gf.Vec3f(grid_range * grid_size, y, ground_z + 0.001),
+        ]
+        line_geom.GetPointsAttr().Set(points)
+        line_geom.GetCurveVertexCountsAttr().Set([2])
+        line_geom.GetTypeAttr().Set("linear")
+        
+        # 设置线条颜色为深灰色
+        line_geom.CreateDisplayColorAttr([(0.3, 0.3, 0.3)])
+        line_geom.CreateWidthsAttr([0.01])
+        line_count += 1
+    
+    # 创建 Y 方向的线
+    for i in range(-grid_range, grid_range + 1):
+        x = i * grid_size
+        
+        # 负数用 n 表示
+        line_name = f"LineY_n{abs(i)}" if i < 0 else f"LineY_{i}"
+        line_path = f"{grid_xform_path}/{line_name}"
+        line_geom = UsdGeom.BasisCurves.Define(stage, line_path)
+        
+        points = [
+            Gf.Vec3f(x, -grid_range * grid_size, ground_z + 0.001),
+            Gf.Vec3f(x, grid_range * grid_size, ground_z + 0.001),
+        ]
+        line_geom.GetPointsAttr().Set(points)
+        line_geom.GetCurveVertexCountsAttr().Set([2])
+        line_geom.GetTypeAttr().Set("linear")
+        
+        line_geom.CreateDisplayColorAttr([(0.3, 0.3, 0.3)])
+        line_geom.CreateWidthsAttr([0.01])
+        line_count += 1
+    
+    print(f"  ✓ 已添加 {line_count} 条网格线（{grid_size}m 间距）")
     return True
 
 
@@ -587,7 +751,38 @@ def main():
             ground_z = 0.0
         
         # 在检测到的地面高度创建地面平面
-        add_ground_plane(stage, ground_z)
+        print(f"\n[地面] 添加地面平面于 z = {ground_z:.4f}m")
+        
+        # 使用 Isaac Sim 的 GroundPlane 类（带网格）
+        from omni.isaac.core.objects import GroundPlane
+        ground_plane = GroundPlane(
+            prim_path="/World/GroundPlane",
+            size=100.0,
+            color=np.array([0.5, 0.5, 0.5]),  # 灰色
+        )
+        ground_plane.set_world_pose(position=np.array([0, 0, ground_z]))
+        
+        # 启用网格显示（帮助看清物体位置）
+        try:
+            import omni.kit.viewport.utility as vp_utils
+            viewport_api = vp_utils.get_active_viewport()
+            if viewport_api:
+                # 启用网格显示
+                viewport_api.legacy_window.set_active_camera("/OmniverseKit_Persp")
+                # 启用网格
+                import carb
+                settings = carb.settings.get_settings()
+                settings.set("/persistent/app/viewport/displayOptions", 31)  # 启用网格
+                settings.set("/persistent/app/viewport/grid/enabled", True)
+                settings.set("/persistent/app/viewport/grid/scale", 1.0)  # 1米网格
+                print(f"  ✓ 已启用视口网格显示（1m 网格）")
+        except Exception as e:
+            print(f"  ⚠️  网格显示设置失败: {e}")
+        
+        print(f"  ✓ 已添加 GroundPlane（灰色，z={ground_z:.4f}m）")
+        
+        # 添加网格线（帮助看清物体位置）
+        add_grid_lines(stage, ground_z, grid_size=1.0, grid_range=50)
         
         # 添加光照
         add_lighting(stage)
