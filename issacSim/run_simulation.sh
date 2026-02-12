@@ -76,7 +76,7 @@ echo ""
 $ISAAC_PYTHON load_world_mesh.py \
     --input_dir ../world_mesh_final \
     --usd_cache ./usd_cache \
-    --simulation_time 100 \
+    --simulation_time 1000 \
     --max_objects 0
 
 echo ""
